@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostgreSQL Yedekleme</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background: #f0f2f5; }
+    .navbar { background: #1a1a2e !important; }
+    .navbar-brand { color: #e0e0e0 !important; font-weight: 600; letter-spacing: .5px; }
+    .card { border: none; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    .card-header { border-radius: 12px 12px 0 0 !important; background: #fff; border-bottom: 1px solid #eee; font-weight: 600; }
+    .nav-tabs .nav-link { color: #555; }
+    .nav-tabs .nav-link.active { font-weight: 600; color: #0d6efd; }
+    .badge-success { background: #d1f5e3; color: #1a7a4a; }
+    .badge-error   { background: #fde8e8; color: #c0392b; }
+    .log-table td  { font-size: .85rem; vertical-align: middle; }
+    .db-row:hover  { background: #f8f9ff; }
+    #toast-wrap    { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; min-width: 280px; }
+    .spin { animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .restore-warning { background: #fff8e1; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .88rem; }
+    .server-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem 1.2rem; background: #fff; }
+    .server-card:hover { border-color: #0d6efd44; box-shadow: 0 2px 8px rgba(13,110,253,.08); }
+    .type-badge { font-size: .75rem; font-weight: 600; padding: .25rem .6rem; border-radius: 20px; }
+    .type-ssh-docker  { background: #dbeafe; color: #1d4ed8; }
+    .type-ssh-pg      { background: #ede9fe; color: #6d28d9; }
+    .type-local-docker { background: #dcfce7; color: #166534; }
+    .type-local-pg    { background: #fef3c7; color: #92400e; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark mb-4">
+  <div class="container-fluid">
+    <span class="navbar-brand"><i class="bi bi-database-fill-gear me-2"></i>PostgreSQL Yedekleme</span>
+    <form method="POST" action="/logout" class="d-inline">
+      <button type="submit" class="btn btn-outline-light btn-sm">
+        <i class="bi bi-box-arrow-right me-1"></i>Çıkış
+      </button>
+    </form>
+  </div>
+</nav>
+
+<div class="container-lg pb-5">
+  <ul class="nav nav-tabs mb-4" id="mainTabs">
+    <li class="nav-item">
+      <a class="nav-link active" data-bs-toggle="tab" href="#tab-servers" id="tab-servers-link">
+        <i class="bi bi-hdd-network me-1"></i>Sunucular
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link" data-bs-toggle="tab" href="#tab-databases" id="tab-db-link">
+        <i class="bi bi-database me-1"></i>Veritabanları
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link" data-bs-toggle="tab" href="#tab-jobs" id="tab-jobs-link">
+        <i class="bi bi-clock-history me-1"></i>Zamanlamalar
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link" data-bs-toggle="tab" href="#tab-backups" id="tab-backups-link">
+        <i class="bi bi-archive me-1"></i>Yedek Dosyaları
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link" data-bs-toggle="tab" href="#tab-logs" id="tab-logs-link">
+        <i class="bi bi-journal-text me-1"></i>Geçmiş
+      </a>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+
+    <!-- ===== SERVERS TAB ===== -->
+    <div class="tab-pane fade show active" id="tab-servers">
+      <div class="row g-4">
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header d-flex align-items-center">
+              <span><i class="bi bi-hdd-network me-2"></i>Kayıtlı Sunucular</span>
+              <button class="btn btn-sm btn-primary ms-auto" onclick="openServerModal()">
+                <i class="bi bi-plus-lg me-1"></i>Yeni Sunucu
+              </button>
+            </div>
+            <div class="card-body">
+              <div id="servers-empty" class="text-center py-5 text-muted">
+                <i class="bi bi-hdd-network-fill fs-2 d-block mb-2"></i>
+                Henüz sunucu eklenmemiş. "Yeni Sunucu" butonuna tıklayın.
+              </div>
+              <div id="servers-list" class="row g-3"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- General settings -->
+        <div class="col-md-4">
+          <div class="card">
+            <div class="card-header"><i class="bi bi-folder2 me-2"></i>Genel Ayarlar</div>
+            <div class="card-body">
+              <label class="form-label">Saklanacak Yedek Sayısı (her DB için)</label>
+              <div class="input-group" style="max-width:160px">
+                <input type="number" class="form-control" id="keep_backups" value="7" min="1" max="365">
+                <span class="input-group-text">adet</span>
+              </div>
+            </div>
+            <div class="card-footer bg-white border-top-0 d-flex justify-content-end">
+              <button class="btn btn-primary btn-sm" onclick="saveConfig()">
+                <i class="bi bi-floppy me-1"></i>Kaydet
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Credentials hint -->
+        <div class="col-md-8">
+          <div class="card border-warning">
+            <div class="card-body small text-muted">
+              <i class="bi bi-shield-lock me-1 text-warning"></i>
+              <strong>Giriş kimlik bilgileri</strong> ortam değişkenleriyle ayarlanır:<br>
+              <code>APP_USERNAME</code> (varsayılan: <code>admin</code>) &nbsp;·&nbsp;
+              <code>APP_PASSWORD</code> (varsayılan: <code>changeme123</code>) &nbsp;·&nbsp;
+              <code>SECRET_KEY</code> (Flask session şifrelemesi için, üretimde mutlaka değiştirin)
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== DATABASES TAB ===== -->
+    <div class="tab-pane fade" id="tab-databases">
+      <div class="card">
+        <div class="card-header d-flex align-items-center flex-wrap gap-2">
+          <span><i class="bi bi-database me-2"></i>Veritabanları</span>
+          <div class="ms-auto d-flex align-items-center gap-2">
+            <select class="form-select form-select-sm" id="db-server-select" style="max-width:240px"
+                    onchange="onDbServerChange()">
+              <option value="">— Sunucu seçin —</option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary" onclick="loadDatabasesForSelected()">
+              <i class="bi bi-arrow-clockwise me-1"></i>Yenile
+            </button>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div id="db-loading" class="text-center py-4 text-muted d-none">
+            <i class="bi bi-arrow-clockwise spin fs-4"></i>
+            <div class="mt-2">Veritabanları yükleniyor…</div>
+          </div>
+          <div id="db-empty" class="text-center py-5 text-muted">
+            <i class="bi bi-database-slash fs-2 d-block mb-2"></i>
+            Sunucu seçin ve "Yenile" butonuna tıklayın.
+          </div>
+          <table class="table mb-0 d-none" id="db-table">
+            <thead class="table-light">
+              <tr><th>Veritabanı</th><th class="text-end">İşlemler</th></tr>
+            </thead>
+            <tbody id="db-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== JOBS TAB ===== -->
+    <div class="tab-pane fade" id="tab-jobs">
+      <div class="card">
+        <div class="card-header d-flex align-items-center">
+          <span><i class="bi bi-clock-history me-2"></i>Aktif Zamanlamalar</span>
+          <button class="btn btn-sm btn-outline-primary ms-auto" onclick="loadJobs()">
+            <i class="bi bi-arrow-clockwise me-1"></i>Yenile
+          </button>
+        </div>
+        <div class="card-body p-0">
+          <div id="jobs-empty" class="text-center py-5 text-muted">
+            <i class="bi bi-calendar-x fs-2 d-block mb-2"></i>Henüz zamanlama yok.
+          </div>
+          <table class="table mb-0 d-none" id="jobs-table">
+            <thead class="table-light">
+              <tr>
+                <th>İş</th><th>Tetikleyici</th><th>Sonraki Çalışma (UTC)</th><th class="text-end">İşlem</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== BACKUP FILES TAB ===== -->
+    <div class="tab-pane fade" id="tab-backups">
+      <div class="card">
+        <div class="card-header d-flex align-items-center">
+          <span><i class="bi bi-archive me-2"></i>Yedek Dosyaları</span>
+          <button class="btn btn-sm btn-outline-primary ms-auto" onclick="loadBackupFiles()">
+            <i class="bi bi-arrow-clockwise me-1"></i>Yenile
+          </button>
+        </div>
+        <div class="card-body p-0">
+          <div id="backups-empty" class="text-center py-5 text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>Henüz yedek dosyası yok.
+          </div>
+          <div class="table-responsive">
+            <table class="table log-table mb-0 d-none" id="backups-table">
+              <thead class="table-light">
+                <tr>
+                  <th>Sunucu</th><th>Veritabanı</th><th>Dosya Adı</th>
+                  <th>Tarih</th><th>Boyut</th><th class="text-end">İşlemler</th>
+                </tr>
+              </thead>
+              <tbody id="backups-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== LOGS TAB ===== -->
+    <div class="tab-pane fade" id="tab-logs">
+      <div class="card">
+        <div class="card-header d-flex align-items-center">
+          <span><i class="bi bi-journal-text me-2"></i>Yedekleme Geçmişi</span>
+          <button class="btn btn-sm btn-outline-primary ms-auto" onclick="loadLogs()">
+            <i class="bi bi-arrow-clockwise me-1"></i>Yenile
+          </button>
+        </div>
+        <div class="card-body p-0">
+          <div id="logs-empty" class="text-center py-5 text-muted">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>Henüz kayıt yok.
+          </div>
+          <div class="table-responsive">
+            <table class="table log-table mb-0 d-none" id="logs-table">
+              <thead class="table-light">
+                <tr>
+                  <th>Sunucu</th><th>Veritabanı</th><th>Başlangıç</th>
+                  <th>Süre</th><th>Durum</th><th>Boyut</th><th>Mesaj</th>
+                </tr>
+              </thead>
+              <tbody id="logs-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- tab-content -->
+</div><!-- container -->
+
+<!-- ===== SERVER MODAL ===== -->
+<div class="modal fade" id="serverModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="server-modal-title"><i class="bi bi-hdd-network me-2"></i>Sunucu</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="sv-id">
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Sunucu Adı <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="sv-name" placeholder="örn: Üretim Sunucu">
+        </div>
+
+        <!-- SSH toggle -->
+        <div class="form-check form-switch mb-3">
+          <input class="form-check-input" type="checkbox" id="sv-remote-toggle" onchange="onRemoteToggle()">
+          <label class="form-check-label fw-semibold" for="sv-remote-toggle">
+            SSH ile uzak sunucuya bağlan
+          </label>
+        </div>
+
+        <div id="sv-ssh-fields">
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label">SSH IP / Hostname</label>
+              <input type="text" class="form-control" id="sv-ssh-host" placeholder="192.168.1.10">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">SSH Kullanıcı</label>
+              <input type="text" class="form-control" id="sv-ssh-user" placeholder="ubuntu">
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label">SSH Şifre <small class="text-muted">(key varsa boş bırakın)</small></label>
+              <input type="password" class="form-control" id="sv-ssh-password" placeholder="(değiştirmek için girin)">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">SSH Anahtar Dosyası <small class="text-muted">(opsiyonel)</small></label>
+              <input type="text" class="form-control" id="sv-ssh-key" placeholder="/home/user/.ssh/id_ed25519">
+            </div>
+          </div>
+          <div class="alert alert-info py-2 small mb-3">
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>SSH Şifre</strong> kullanıyorsanız sunucuda <code>sshpass</code> paketi kurulu olmalıdır
+            (<code>sudo apt install sshpass</code>). Şifresiz key tercih edilir.
+          </div>
+          <hr class="my-3">
+        </div>
+
+        <!-- Docker toggle -->
+        <div class="form-check form-switch mb-3">
+          <input class="form-check-input" type="checkbox" id="sv-docker-toggle" onchange="onDockerToggle()">
+          <label class="form-check-label fw-semibold" for="sv-docker-toggle">
+            Docker container içindeki PostgreSQL
+          </label>
+        </div>
+
+        <div id="sv-docker-fields" class="mb-3 d-none">
+          <label class="form-label">Container Adı</label>
+          <input type="text" class="form-control" id="sv-container" placeholder="postgres">
+        </div>
+
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label fw-semibold">PostgreSQL Kullanıcı</label>
+            <input type="text" class="form-control" id="sv-pg-user" value="postgres">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-semibold">PostgreSQL Şifre <small class="text-muted">(boş bırakılabilir)</small></label>
+            <input type="password" class="form-control" id="sv-pg-password" placeholder="(değiştirmek için girin)">
+          </div>
+        </div>
+
+        <div class="mt-3 p-3 bg-light rounded small text-muted" id="sv-type-preview">
+          Bağlantı türü: <strong id="sv-type-label">Yerel PostgreSQL</strong>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">İptal</button>
+        <button class="btn btn-primary" onclick="saveServer()">
+          <i class="bi bi-floppy me-1"></i>Kaydet
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCHEDULE MODAL ===== -->
+<div class="modal fade" id="scheduleModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-clock-fill me-2"></i>Zamanlama Kur</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1 text-muted small">Sunucu: <strong id="modal-server-name"></strong></p>
+        <p class="mb-3 text-muted small">Veritabanı: <strong id="modal-db-name"></strong></p>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Periyot Türü</label>
+          <select class="form-select" id="freq_type" onchange="onFreqChange()">
+            <option value="interval">Her X Saatte Bir</option>
+            <option value="daily">Her Gün Belirli Saatte</option>
+            <option value="weekly">Her Hafta Belirli Günde</option>
+            <option value="cron">Özel Cron İfadesi</option>
+          </select>
+        </div>
+        <div id="freq-interval">
+          <label class="form-label">Saat Aralığı</label>
+          <div class="input-group" style="max-width:200px">
+            <input type="number" class="form-control" id="hours" value="24" min="1" max="8760">
+            <span class="input-group-text">saat</span>
+          </div>
+        </div>
+        <div id="freq-daily" class="d-none">
+          <label class="form-label">Saat (UTC)</label>
+          <div class="input-group" style="max-width:200px">
+            <input type="number" class="form-control" id="daily_hour" value="2" min="0" max="23">
+            <span class="input-group-text">:</span>
+            <input type="number" class="form-control" id="daily_minute" value="0" min="0" max="59">
+          </div>
+        </div>
+        <div id="freq-weekly" class="d-none">
+          <div class="mb-2">
+            <label class="form-label">Gün</label>
+            <select class="form-select" id="weekly_dow">
+              <option value="0">Pazartesi</option><option value="1">Salı</option>
+              <option value="2">Çarşamba</option><option value="3">Perşembe</option>
+              <option value="4">Cuma</option><option value="5">Cumartesi</option>
+              <option value="6">Pazar</option>
+            </select>
+          </div>
+          <label class="form-label">Saat (UTC)</label>
+          <div class="input-group" style="max-width:200px">
+            <input type="number" class="form-control" id="weekly_hour" value="2" min="0" max="23">
+            <span class="input-group-text">:</span>
+            <input type="number" class="form-control" id="weekly_minute" value="0" min="0" max="59">
+          </div>
+        </div>
+        <div id="freq-cron" class="d-none">
+          <label class="form-label">Cron İfadesi <small class="text-muted">(örn: 0 2 * * *)</small></label>
+          <input type="text" class="form-control font-monospace" id="cron_expr" placeholder="0 2 * * *">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">İptal</button>
+        <button class="btn btn-primary" onclick="createJob()">
+          <i class="bi bi-check-lg me-1"></i>Zamanlamayı Kaydet
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== RESTORE MODAL ===== -->
+<div class="modal fade" id="restoreModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-arrow-counterclockwise me-2"></i>Geri Yükleme</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label text-muted">Dosya</label>
+          <div class="font-monospace small" id="restore-filename"></div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Hedef Sunucu</label>
+          <select class="form-select" id="restore-target-server">
+            <option value="">— Sunucu seçin —</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Geri Yüklenecek DB Adı</label>
+          <input type="text" class="form-control" id="restore-dbname" placeholder="mydb">
+          <div class="form-text">Mevcut değilse otomatik oluşturulur.</div>
+        </div>
+        <div class="restore-warning">
+          <i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>
+          Belirtilen veritabanı varsa mevcut verilerinin <strong>üzerine yazılır</strong>.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">İptal</button>
+        <button class="btn btn-danger" id="restore-btn" onclick="doRestore()">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Geri Yükle
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-wrap"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _servers = [];
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function toast(msg, type = 'success') {
+  const id = 'toast_' + Date.now();
+  const color = type === 'success' ? 'bg-success' : type === 'warning' ? 'bg-warning text-dark' : 'bg-danger';
+  document.getElementById('toast-wrap').insertAdjacentHTML('beforeend', `
+    <div id="${id}" class="toast align-items-center text-white ${color} border-0 mb-2 show" role="alert">
+      <div class="d-flex">
+        <div class="toast-body">${msg}</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto"
+                onclick="document.getElementById('${id}').remove()"></button>
+      </div>
+    </div>`);
+  setTimeout(() => { const el = document.getElementById(id); if (el) el.remove(); }, 5000);
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('tr-TR');
+}
+
+function fmtDuration(startIso, endIso) {
+  if (!startIso || !endIso) return '—';
+  const s = Math.round((new Date(endIso) - new Date(startIso)) / 1000);
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
+
+function serverTypeBadge(s) {
+  const isRemote = s.ssh_host && s.ssh_host.trim();
+  const isDocker = s.docker_container && s.docker_container.trim();
+  if (isRemote && isDocker)  return '<span class="type-badge type-ssh-docker">SSH + Docker</span>';
+  if (isRemote && !isDocker) return '<span class="type-badge type-ssh-pg">SSH + PostgreSQL</span>';
+  if (!isRemote && isDocker) return '<span class="type-badge type-local-docker">Yerel Docker</span>';
+  return '<span class="type-badge type-local-pg">Yerel PostgreSQL</span>';
+}
+
+function updateServerDropdowns() {
+  const opts = _servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+  document.getElementById('db-server-select').innerHTML = '<option value="">— Sunucu seçin —</option>' + opts;
+  document.getElementById('restore-target-server').innerHTML = '<option value="">— Sunucu seçin —</option>' + opts;
+}
+
+// ── Servers ───────────────────────────────────────────────────────────────────
+
+async function loadServers() {
+  const r = await fetch('/api/servers');
+  _servers = await r.json();
+  renderServers();
+  updateServerDropdowns();
+}
+
+function renderServers() {
+  const list = document.getElementById('servers-list');
+  const empty = document.getElementById('servers-empty');
+  list.innerHTML = '';
+  if (_servers.length === 0) {
+    empty.classList.remove('d-none');
+    return;
+  }
+  empty.classList.add('d-none');
+  _servers.forEach(s => {
+    const sshInfo = s.ssh_host ? `<span class="text-muted small me-3"><i class="bi bi-terminal me-1"></i>${s.ssh_user}@${s.ssh_host}</span>` : '';
+    const dockerInfo = s.docker_container ? `<span class="text-muted small"><i class="bi bi-box me-1"></i>${s.docker_container}</span>` : '';
+    const col = document.createElement('div');
+    col.className = 'col-md-6 col-lg-4';
+    col.innerHTML = `
+      <div class="server-card h-100">
+        <div class="d-flex align-items-start justify-content-between mb-2">
+          <div>
+            <div class="fw-semibold mb-1">${s.name}</div>
+            ${serverTypeBadge(s)}
+          </div>
+          <div class="d-flex gap-1">
+            <button class="btn btn-sm btn-outline-secondary" title="Bağlantıyı Test Et"
+                    onclick="testServer(${s.id}, this)">
+              <i class="bi bi-plug"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-primary" title="Düzenle"
+                    onclick="openServerModal(${s.id})">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger" title="Sil"
+                    onclick="deleteServer(${s.id}, '${s.name.replace(/'/g,"\\'")}')">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+        <div class="mt-2">${sshInfo}${dockerInfo}</div>
+        <div class="text-muted small mt-1"><i class="bi bi-person me-1"></i>${s.pg_user}</div>
+      </div>`;
+    list.appendChild(col);
+  });
+}
+
+async function testServer(serverId, btn) {
+  const icon = btn.querySelector('i');
+  icon.className = 'bi bi-arrow-clockwise spin';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/servers/${serverId}/test`, { method: 'POST' });
+    const d = await r.json();
+    toast(d.message, d.status === 'ok' ? 'success' : d.status === 'warning' ? 'warning' : 'error');
+  } finally {
+    icon.className = 'bi bi-plug';
+    btn.disabled = false;
+  }
+}
+
+async function deleteServer(serverId, name) {
+  if (!confirm(`"${name}" sunucusunu silmek istiyor musunuz?`)) return;
+  const r = await fetch(`/api/servers/${serverId}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.status === 'ok') { toast('Sunucu silindi.'); loadServers(); }
+  else toast('Hata: ' + (d.error || JSON.stringify(d)), 'error');
+}
+
+// ── Server Modal ──────────────────────────────────────────────────────────────
+
+const _serverModal = new bootstrap.Modal(document.getElementById('serverModal'));
+
+function openServerModal(serverId = null) {
+  document.getElementById('sv-id').value = serverId || '';
+  document.getElementById('server-modal-title').innerHTML =
+    `<i class="bi bi-hdd-network me-2"></i>${serverId ? 'Sunucuyu Düzenle' : 'Yeni Sunucu'}`;
+
+  if (serverId) {
+    const s = _servers.find(x => x.id === serverId);
+    if (!s) return;
+    document.getElementById('sv-name').value = s.name;
+    const isRemote = !!(s.ssh_host && s.ssh_host.trim());
+    const isDocker = !!(s.docker_container && s.docker_container.trim());
+    document.getElementById('sv-remote-toggle').checked = isRemote;
+    document.getElementById('sv-ssh-host').value = s.ssh_host || '';
+    document.getElementById('sv-ssh-user').value = s.ssh_user || '';
+    document.getElementById('sv-ssh-password').value = '';
+    document.getElementById('sv-ssh-key').value = s.ssh_key || '';
+    document.getElementById('sv-docker-toggle').checked = isDocker;
+    document.getElementById('sv-container').value = s.docker_container || '';
+    document.getElementById('sv-pg-user').value = s.pg_user || 'postgres';
+    document.getElementById('sv-pg-password').value = '';
+    onRemoteToggle();
+    onDockerToggle();
+  } else {
+    document.getElementById('sv-name').value = '';
+    document.getElementById('sv-remote-toggle').checked = false;
+    document.getElementById('sv-ssh-host').value = '';
+    document.getElementById('sv-ssh-user').value = '';
+    document.getElementById('sv-ssh-password').value = '';
+    document.getElementById('sv-ssh-key').value = '';
+    document.getElementById('sv-docker-toggle').checked = false;
+    document.getElementById('sv-container').value = '';
+    document.getElementById('sv-pg-user').value = 'postgres';
+    document.getElementById('sv-pg-password').value = '';
+    onRemoteToggle();
+    onDockerToggle();
+  }
+  updateServerTypeLabel();
+  _serverModal.show();
+}
+
+function onRemoteToggle() {
+  const on = document.getElementById('sv-remote-toggle').checked;
+  document.getElementById('sv-ssh-fields').style.display = on ? '' : 'none';
+  updateServerTypeLabel();
+}
+
+function onDockerToggle() {
+  const on = document.getElementById('sv-docker-toggle').checked;
+  document.getElementById('sv-docker-fields').classList.toggle('d-none', !on);
+  updateServerTypeLabel();
+}
+
+function updateServerTypeLabel() {
+  const isRemote = document.getElementById('sv-remote-toggle').checked;
+  const isDocker = document.getElementById('sv-docker-toggle').checked;
+  let label;
+  if (isRemote && isDocker)  label = 'SSH + Docker PostgreSQL';
+  else if (isRemote)         label = 'SSH + Yerel PostgreSQL (uzak sunucuda)';
+  else if (isDocker)         label = 'Yerel Docker PostgreSQL';
+  else                       label = 'Yerel PostgreSQL';
+  document.getElementById('sv-type-label').textContent = label;
+}
+
+async function saveServer() {
+  const id = document.getElementById('sv-id').value;
+  const isRemote = document.getElementById('sv-remote-toggle').checked;
+  const isDocker = document.getElementById('sv-docker-toggle').checked;
+
+  const payload = {
+    name: document.getElementById('sv-name').value.trim(),
+    ssh_host: isRemote ? document.getElementById('sv-ssh-host').value.trim() : '',
+    ssh_user: isRemote ? document.getElementById('sv-ssh-user').value.trim() : '',
+    ssh_key:  isRemote ? document.getElementById('sv-ssh-key').value.trim()  : '',
+    docker_container: isDocker ? document.getElementById('sv-container').value.trim() : '',
+    pg_user: document.getElementById('sv-pg-user').value.trim() || 'postgres',
+  };
+  const sshPwd = document.getElementById('sv-ssh-password').value;
+  if (sshPwd) payload.ssh_password = sshPwd;
+  const pwd = document.getElementById('sv-pg-password').value;
+  if (pwd) payload.pg_password = pwd;
+
+  if (!payload.name) { toast('Sunucu adı gerekli.', 'error'); return; }
+
+  const url    = id ? `/api/servers/${id}` : '/api/servers';
+  const method = id ? 'PUT' : 'POST';
+  const r = await fetch(url, {
+    method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (d.status === 'ok') {
+    toast(id ? 'Sunucu güncellendi.' : 'Sunucu eklendi.');
+    _serverModal.hide();
+    loadServers();
+  } else {
+    toast('Hata: ' + (d.error || JSON.stringify(d)), 'error');
+  }
+}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+async function loadConfig() {
+  const r = await fetch('/api/config');
+  const d = await r.json();
+  document.getElementById('keep_backups').value = d.keep_backups || '7';
+}
+
+async function saveConfig() {
+  const r = await fetch('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ keep_backups: document.getElementById('keep_backups').value })
+  });
+  const d = await r.json();
+  if (d.status === 'ok') toast('Ayarlar kaydedildi.');
+  else toast('Hata: ' + JSON.stringify(d), 'error');
+}
+
+// ── Databases ─────────────────────────────────────────────────────────────────
+
+function onDbServerChange() {
+  const serverId = document.getElementById('db-server-select').value;
+  if (serverId) loadDatabasesForServer(parseInt(serverId));
+  else {
+    document.getElementById('db-table').classList.add('d-none');
+    document.getElementById('db-empty').classList.remove('d-none');
+    document.getElementById('db-empty').innerHTML =
+      '<i class="bi bi-database-slash fs-2 d-block mb-2"></i>Sunucu seçin ve "Yenile" butonuna tıklayın.';
+  }
+}
+
+function loadDatabasesForSelected() {
+  const serverId = document.getElementById('db-server-select').value;
+  if (!serverId) { toast('Önce bir sunucu seçin.', 'warning'); return; }
+  loadDatabasesForServer(parseInt(serverId));
+}
+
+async function loadDatabasesForServer(serverId) {
+  document.getElementById('db-empty').classList.add('d-none');
+  document.getElementById('db-table').classList.add('d-none');
+  document.getElementById('db-loading').classList.remove('d-none');
+
+  const r = await fetch(`/api/servers/${serverId}/databases`);
+  const d = await r.json();
+  document.getElementById('db-loading').classList.add('d-none');
+
+  if (d.status !== 'ok') {
+    document.getElementById('db-empty').classList.remove('d-none');
+    document.getElementById('db-empty').innerHTML =
+      `<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>${d.message || d.error}`;
+    return;
+  }
+
+  const tbody = document.getElementById('db-tbody');
+  tbody.innerHTML = '';
+  const server = _servers.find(s => s.id === serverId);
+  const serverName = server ? server.name : '';
+
+  d.databases.forEach(db => {
+    const tr = document.createElement('tr');
+    tr.className = 'db-row';
+    tr.innerHTML = `
+      <td><i class="bi bi-database me-2 text-muted"></i>${db}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-success me-2"
+                onclick="backupNow(${serverId}, '${db.replace(/'/g,"\\'")}')">
+          <i class="bi bi-cloud-download me-1"></i>Hemen Yedekle
+        </button>
+        <button class="btn btn-sm btn-outline-primary"
+                onclick="openScheduleModal(${serverId}, '${serverName.replace(/'/g,"\\'")}', '${db.replace(/'/g,"\\'")}')">
+          <i class="bi bi-clock me-1"></i>Zamanla
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('db-table').classList.remove('d-none');
+}
+
+async function backupNow(serverId, database) {
+  const r = await fetch('/api/backup/now', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ server_id: serverId, database })
+  });
+  const d = await r.json();
+  if (d.status === 'started') toast(`"${database}" için yedekleme başlatıldı.`);
+  else toast('Hata: ' + (d.error || JSON.stringify(d)), 'error');
+}
+
+// ── Schedule Modal ─────────────────────────────────────────────────────────────
+
+let _scheduleServerId = null, _scheduleDb = '';
+const _scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
+
+function openScheduleModal(serverId, serverName, db) {
+  _scheduleServerId = serverId;
+  _scheduleDb = db;
+  document.getElementById('modal-server-name').textContent = serverName;
+  document.getElementById('modal-db-name').textContent = db;
+  document.getElementById('freq_type').value = 'interval';
+  onFreqChange();
+  _scheduleModal.show();
+}
+
+function onFreqChange() {
+  const v = document.getElementById('freq_type').value;
+  document.getElementById('freq-interval').classList.toggle('d-none', v !== 'interval');
+  document.getElementById('freq-daily').classList.toggle('d-none',    v !== 'daily');
+  document.getElementById('freq-weekly').classList.toggle('d-none',   v !== 'weekly');
+  document.getElementById('freq-cron').classList.toggle('d-none',     v !== 'cron');
+}
+
+async function createJob() {
+  const freq_type = document.getElementById('freq_type').value;
+  const payload = { server_id: _scheduleServerId, database: _scheduleDb, freq_type };
+
+  if (freq_type === 'interval')     payload.hours = parseInt(document.getElementById('hours').value);
+  else if (freq_type === 'daily')   { payload.hour = parseInt(document.getElementById('daily_hour').value); payload.minute = parseInt(document.getElementById('daily_minute').value); }
+  else if (freq_type === 'weekly')  { payload.dow = parseInt(document.getElementById('weekly_dow').value); payload.hour = parseInt(document.getElementById('weekly_hour').value); payload.minute = parseInt(document.getElementById('weekly_minute').value); }
+  else                               payload.cron = document.getElementById('cron_expr').value.trim();
+
+  const r = await fetch('/api/jobs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (d.status === 'ok') {
+    toast(`"${_scheduleDb}" zamanlaması oluşturuldu.`);
+    _scheduleModal.hide();
+    loadJobs();
+  } else {
+    toast('Hata: ' + (d.error || JSON.stringify(d)), 'error');
+  }
+}
+
+// ── Jobs ──────────────────────────────────────────────────────────────────────
+
+async function loadJobs() {
+  const r = await fetch('/api/jobs');
+  const jobs = await r.json();
+  const tbody = document.getElementById('jobs-tbody');
+  tbody.innerHTML = '';
+
+  if (jobs.length === 0) {
+    document.getElementById('jobs-table').classList.add('d-none');
+    document.getElementById('jobs-empty').classList.remove('d-none');
+    return;
+  }
+  document.getElementById('jobs-empty').classList.add('d-none');
+  document.getElementById('jobs-table').classList.remove('d-none');
+
+  jobs.forEach(j => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><i class="bi bi-database me-2 text-muted"></i>${j.name}</td>
+      <td><code>${j.trigger}</code></td>
+      <td>${fmtDate(j.next_run)}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-danger" onclick="deleteJob('${j.id}')">
+          <i class="bi bi-trash"></i>
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function deleteJob(jobId) {
+  if (!confirm('Bu zamanlamayı silmek istiyor musunuz?')) return;
+  const r = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.status === 'ok') { toast('Zamanlama silindi.'); loadJobs(); }
+  else toast('Hata: ' + (d.error || JSON.stringify(d)), 'error');
+}
+
+// ── Backup Files ──────────────────────────────────────────────────────────────
+
+async function loadBackupFiles() {
+  const r = await fetch('/api/backups');
+  const files = await r.json();
+  const tbody = document.getElementById('backups-tbody');
+  tbody.innerHTML = '';
+
+  if (files.length === 0) {
+    document.getElementById('backups-table').classList.add('d-none');
+    document.getElementById('backups-empty').classList.remove('d-none');
+    return;
+  }
+  document.getElementById('backups-empty').classList.add('d-none');
+  document.getElementById('backups-table').classList.remove('d-none');
+
+  files.forEach(f => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="text-muted small">${f.server_name || '—'}</span></td>
+      <td><i class="bi bi-database me-1 text-muted"></i>${f.database}</td>
+      <td class="font-monospace small">${f.filename}</td>
+      <td>${fmtDate(f.modified)}</td>
+      <td>${fmtSize(f.size)}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-warning"
+                onclick="openRestoreModal('${f.filename}', '${f.database.replace(/'/g,"\\'")}')">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Geri Yükle
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Restore Modal ─────────────────────────────────────────────────────────────
+
+let _restoreFile = '';
+const _restoreModal = new bootstrap.Modal(document.getElementById('restoreModal'));
+
+function openRestoreModal(filename, database) {
+  _restoreFile = filename;
+  document.getElementById('restore-filename').textContent = filename;
+  document.getElementById('restore-dbname').value = database;
+  document.getElementById('restore-target-server').value = '';
+  _restoreModal.show();
+}
+
+async function doRestore() {
+  const targetServerId = document.getElementById('restore-target-server').value;
+  const database = document.getElementById('restore-dbname').value.trim();
+
+  if (!targetServerId) { toast('Hedef sunucu seçin.', 'error'); return; }
+  if (!database) { toast('Veritabanı adı girin.', 'error'); return; }
+
+  const btn = document.getElementById('restore-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise spin me-1"></i>Yükleniyor…';
+
+  try {
+    const r = await fetch('/api/restore', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename: _restoreFile, target_server_id: parseInt(targetServerId), database })
+    });
+    const d = await r.json();
+    if (d.status === 'ok') { toast(d.message, 'success'); _restoreModal.hide(); }
+    else toast('Hata: ' + d.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Geri Yükle';
+  }
+}
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+
+async function loadLogs() {
+  const r = await fetch('/api/logs?limit=100');
+  const logs = await r.json();
+  const tbody = document.getElementById('logs-tbody');
+  tbody.innerHTML = '';
+
+  if (logs.length === 0) {
+    document.getElementById('logs-table').classList.add('d-none');
+    document.getElementById('logs-empty').classList.remove('d-none');
+    return;
+  }
+  document.getElementById('logs-empty').classList.add('d-none');
+  document.getElementById('logs-table').classList.remove('d-none');
+
+  logs.forEach(l => {
+    const isOk = l.status === 'success';
+    const badge = isOk
+      ? '<span class="badge badge-success">Başarılı</span>'
+      : '<span class="badge badge-error">Hata</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="text-muted small">${l.server_name || '—'}</td>
+      <td>${l.database || '—'}</td>
+      <td>${fmtDate(l.started_at)}</td>
+      <td>${fmtDuration(l.started_at, l.finished_at)}</td>
+      <td>${badge}</td>
+      <td>${fmtSize(l.file_size)}</td>
+      <td class="text-muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${(l.message||'').replace(/"/g,'&quot;')}">${l.message || '—'}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Tab hooks ─────────────────────────────────────────────────────────────────
+
+document.getElementById('tab-jobs-link').addEventListener('shown.bs.tab', loadJobs);
+document.getElementById('tab-logs-link').addEventListener('shown.bs.tab', loadLogs);
+document.getElementById('tab-backups-link').addEventListener('shown.bs.tab', loadBackupFiles);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+loadServers();
+loadConfig();
+</script>
+</body>
+</html>
