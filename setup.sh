@@ -35,6 +35,13 @@ if ! command -v sshpass &>/dev/null; then
   sudo apt-get install -y sshpass
 fi
 
+# 3b. postgresql-client kontrolü (psql / pg_dump — yerel/IP-hostname bağlantılar ve
+#     SSH üzerinden docker'sız psql bağlantıları için gereklidir)
+if ! command -v psql &>/dev/null || ! command -v pg_dump &>/dev/null; then
+  echo "[i] postgresql-client kuruluyor (psql / pg_dump için)..."
+  sudo apt-get install -y postgresql-client
+fi
+
 # 4. Sanal ortam
 echo "==> Python sanal ortamı oluşturuluyor..."
 $PYTHON -m venv "$APP_DIR/venv"
