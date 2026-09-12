@@ -1,6 +1,7 @@
 import subprocess
 import os
 from datetime import datetime
+from urllib.parse import urlparse
 
 import config as cfg_module
 from config import BACKUP_DIR, log_backup, get_backup_file_info
@@ -48,6 +49,22 @@ def _is_docker(server: dict) -> bool:
     return bool(server.get('docker_container', '').strip())
 
 
+def _pg_conn_args(server: dict) -> list:
+    """Returns ['-h', host, '-p', port] for a direct TCP connection to a
+    PostgreSQL server by IP/hostname, when pg_host is set. Used for the
+    "local" (no SSH) case so psql/pg_dump can talk to any reachable
+    PostgreSQL server over the network instead of only the local socket.
+    """
+    host = server.get('pg_host', '').strip()
+    if not host:
+        return []
+    args = ['-h', host]
+    port = str(server.get('pg_port') or '').strip()
+    if port:
+        args += ['-p', port]
+    return args
+
+
 # ---------------------------------------------------------------------------
 # Connection test
 # ---------------------------------------------------------------------------
@@ -85,17 +102,65 @@ def test_server_connection(server: dict) -> dict:
             env = os.environ.copy()
             if server.get('pg_password'):
                 env['PGPASSWORD'] = server['pg_password']
+            conn_args = _pg_conn_args(server)
             r = subprocess.run(
-                ['psql', '-U', server.get('pg_user', 'postgres'), '-d', 'postgres', '-c', 'SELECT 1'],
+                ['psql', '-U', server.get('pg_user', 'postgres')] + conn_args
+                + ['-d', 'postgres', '-c', 'SELECT 1'],
                 capture_output=True, text=True, timeout=15, env=env
             )
             if r.returncode == 0:
+                if conn_args:
+                    host = server.get('pg_host', '').strip()
+                    port = str(server.get('pg_port') or '5432').strip()
+                    return {'status': 'ok', 'message': f'PostgreSQL bağlantısı başarılı ({host}:{port}).'}
                 return {'status': 'ok', 'message': 'Yerel PostgreSQL bağlantısı başarılı.'}
             return {'status': 'error', 'message': r.stderr.strip()}
     except subprocess.TimeoutExpired:
         return {'status': 'error', 'message': 'Bağlantı zaman aşımı.'}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+
+
+# ---------------------------------------------------------------------------
+# MinIO
+# ---------------------------------------------------------------------------
+
+def _minio_client(cfg: dict):
+    from minio import Minio
+    endpoint = cfg.get('minio_endpoint', '').strip()
+    parsed = urlparse(endpoint)
+    secure = parsed.scheme == 'https'
+    host = parsed.netloc or parsed.path
+    return Minio(host, access_key=cfg['minio_access_key'], secret_key=cfg['minio_secret_key'], secure=secure)
+
+
+def test_minio_connection(cfg: dict) -> dict:
+    try:
+        client = _minio_client(cfg)
+        bucket = cfg.get('minio_bucket', '').strip()
+        if not bucket:
+            return {'status': 'error', 'message': 'Bucket adı boş.'}
+        if not client.bucket_exists(bucket):
+            return {'status': 'error', 'message': f'Bucket bulunamadı: {bucket}'}
+        return {'status': 'ok', 'message': f'MinIO bağlantısı başarılı. Bucket "{bucket}" erişilebilir.'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
+def _upload_to_minio(filepath: str, filename: str) -> tuple[bool, str]:
+    """Returns (success, message)."""
+    cfg = cfg_module.get_minio_config()
+    if cfg.get('minio_enabled') != '1':
+        return False, 'devre dışı'
+    try:
+        client = _minio_client(cfg)
+        bucket = cfg.get('minio_bucket', '').strip()
+        if not bucket:
+            return False, 'bucket adı boş'
+        client.fput_object(bucket, filename, filepath, content_type='application/gzip')
+        return True, bucket
+    except Exception as e:
+        return False, str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +193,8 @@ def list_server_databases(server: dict) -> dict:
                 )
             else:
                 r = subprocess.run(
-                    ['psql', '-U', pg_user, '-d', 'postgres', '-t', '-A', '-c', query],
+                    ['psql', '-U', pg_user] + _pg_conn_args(server)
+                    + ['-d', 'postgres', '-t', '-A', '-c', query],
                     capture_output=True, text=True, timeout=20, env=env
                 )
         if r.returncode != 0:
@@ -205,7 +271,7 @@ def _do_backup(server: dict, database: str):
                 )
             else:
                 p_dump = subprocess.Popen(
-                    ['pg_dump', '-U', pg_user, database],
+                    ['pg_dump', '-U', pg_user] + _pg_conn_args(server) + [database],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
                 )
 
@@ -221,9 +287,16 @@ def _do_backup(server: dict, database: str):
         if p_dump.returncode == 0 and p_gz.returncode == 0:
             file_size = os.path.getsize(filepath)
             finished_at = datetime.now().isoformat()
-            log_backup(server_id, server_name, database, started_at, finished_at,
-                       'success', f'Yedek alındı: {filename}', filepath, file_size)
             _cleanup_old_backups(_safe_name(server_name), _safe_name(database), keep)
+            minio_ok, minio_info = _upload_to_minio(filepath, filename)
+            if minio_ok:
+                msg = f'Yedek alındı: {filename} | MinIO: ✓ ({minio_info})'
+            elif minio_info == 'devre dışı':
+                msg = f'Yedek alındı: {filename}'
+            else:
+                msg = f'Yedek alındı: {filename} | MinIO hatası: {minio_info}'
+            log_backup(server_id, server_name, database, started_at, finished_at,
+                       'success', msg, filepath, file_size)
         else:
             dump_err = p_dump.stderr.read().decode(errors='replace')
             gz_err = p_gz.stderr.read().decode(errors='replace')
@@ -332,7 +405,7 @@ def restore_backup(filename: str, target_server: dict, database: str) -> dict:
             else:
                 p_gz = subprocess.Popen(['gunzip', '-c', filepath], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 p_psql = subprocess.Popen(
-                    ['psql', '-U', pg_user, '-d', database],
+                    ['psql', '-U', pg_user] + _pg_conn_args(target_server) + ['-d', database],
                     stdin=p_gz.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
                 )
 
@@ -377,7 +450,7 @@ def _create_db(server: dict, database: str):
                 )
             else:
                 subprocess.run(
-                    ['psql', '-U', pg_user, '-d', 'postgres', '-c', create_sql],
+                    ['psql', '-U', pg_user] + _pg_conn_args(server) + ['-d', 'postgres', '-c', create_sql],
                     capture_output=True, timeout=30, env=env
                 )
     except Exception:

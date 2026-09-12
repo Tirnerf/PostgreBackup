@@ -115,8 +115,49 @@
           </div>
         </div>
 
-        <!-- Credentials hint -->
+        <!-- MinIO settings -->
         <div class="col-md-8">
+          <div class="card">
+            <div class="card-header d-flex align-items-center">
+              <i class="bi bi-cloud-arrow-up me-2"></i>MinIO Ayarları
+              <div class="form-check form-switch ms-auto mb-0">
+                <input class="form-check-input" type="checkbox" id="minio_enabled">
+                <label class="form-check-label small" for="minio_enabled">Etkin</label>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-12">
+                  <label class="form-label">Endpoint <small class="text-muted">örn: http://192.168.1.10:9000</small></label>
+                  <input type="text" class="form-control" id="minio_endpoint" placeholder="http://192.168.1.10:9000">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Access Key</label>
+                  <input type="text" class="form-control font-monospace" id="minio_access_key" placeholder="Access Key">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Secret Key</label>
+                  <input type="password" class="form-control font-monospace" id="minio_secret_key" placeholder="(değiştirmek için girin)">
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Bucket Adı</label>
+                  <input type="text" class="form-control" id="minio_bucket" placeholder="postgres-backups">
+                </div>
+              </div>
+            </div>
+            <div class="card-footer bg-white border-top-0 d-flex gap-2 justify-content-end">
+              <button class="btn btn-outline-secondary btn-sm" onclick="testMinio()">
+                <i class="bi bi-plug me-1"></i>Bağlantıyı Test Et
+              </button>
+              <button class="btn btn-primary btn-sm" onclick="saveMinioConfig()">
+                <i class="bi bi-floppy me-1"></i>Kaydet
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Credentials hint -->
+        <div class="col-12">
           <div class="card border-warning">
             <div class="card-body small text-muted">
               <i class="bi bi-shield-lock me-1 text-warning"></i>
@@ -314,6 +355,20 @@
           <input type="text" class="form-control" id="sv-container" placeholder="postgres">
         </div>
 
+        <div id="sv-pghost-fields" class="row g-3 mb-3">
+          <div class="col-md-8">
+            <label class="form-label">PostgreSQL IP / Hostname <small class="text-muted">(opsiyonel — boşsa yerel soket kullanılır)</small></label>
+            <input type="text" class="form-control" id="sv-pg-host" placeholder="192.168.1.20 veya db.example.com" oninput="updateServerTypeLabel()">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Port</label>
+            <input type="text" class="form-control" id="sv-pg-port" placeholder="5432">
+          </div>
+          <div class="form-text">
+            SSH kullanmadan doğrudan ağ üzerinden (TCP) bir PostgreSQL sunucusuna IP adresi veya hostname ile bağlanmak için doldurun.
+          </div>
+        </div>
+
         <div class="row g-3">
           <div class="col-md-6">
             <label class="form-label fw-semibold">PostgreSQL Kullanıcı</label>
@@ -491,9 +546,11 @@ function fmtDuration(startIso, endIso) {
 function serverTypeBadge(s) {
   const isRemote = s.ssh_host && s.ssh_host.trim();
   const isDocker = s.docker_container && s.docker_container.trim();
+  const hasPgHost = s.pg_host && s.pg_host.trim();
   if (isRemote && isDocker)  return '<span class="type-badge type-ssh-docker">SSH + Docker</span>';
   if (isRemote && !isDocker) return '<span class="type-badge type-ssh-pg">SSH + PostgreSQL</span>';
   if (!isRemote && isDocker) return '<span class="type-badge type-local-docker">Yerel Docker</span>';
+  if (!isRemote && !isDocker && hasPgHost) return '<span class="type-badge type-local-pg">IP/Hostname ile Bağlantı</span>';
   return '<span class="type-badge type-local-pg">Yerel PostgreSQL</span>';
 }
 
@@ -524,6 +581,7 @@ function renderServers() {
   _servers.forEach(s => {
     const sshInfo = s.ssh_host ? `<span class="text-muted small me-3"><i class="bi bi-terminal me-1"></i>${s.ssh_user}@${s.ssh_host}</span>` : '';
     const dockerInfo = s.docker_container ? `<span class="text-muted small"><i class="bi bi-box me-1"></i>${s.docker_container}</span>` : '';
+    const pgHostInfo = (!s.ssh_host && s.pg_host) ? `<span class="text-muted small"><i class="bi bi-hdd-network me-1"></i>${s.pg_host}${s.pg_port ? ':' + s.pg_port : ''}</span>` : '';
     const col = document.createElement('div');
     col.className = 'col-md-6 col-lg-4';
     col.innerHTML = `
@@ -548,7 +606,7 @@ function renderServers() {
             </button>
           </div>
         </div>
-        <div class="mt-2">${sshInfo}${dockerInfo}</div>
+        <div class="mt-2">${sshInfo}${dockerInfo}${pgHostInfo}</div>
         <div class="text-muted small mt-1"><i class="bi bi-person me-1"></i>${s.pg_user}</div>
       </div>`;
     list.appendChild(col);
@@ -599,6 +657,8 @@ function openServerModal(serverId = null) {
     document.getElementById('sv-ssh-key').value = s.ssh_key || '';
     document.getElementById('sv-docker-toggle').checked = isDocker;
     document.getElementById('sv-container').value = s.docker_container || '';
+    document.getElementById('sv-pg-host').value = s.pg_host || '';
+    document.getElementById('sv-pg-port').value = s.pg_port || '5432';
     document.getElementById('sv-pg-user').value = s.pg_user || 'postgres';
     document.getElementById('sv-pg-password').value = '';
     onRemoteToggle();
@@ -612,6 +672,8 @@ function openServerModal(serverId = null) {
     document.getElementById('sv-ssh-key').value = '';
     document.getElementById('sv-docker-toggle').checked = false;
     document.getElementById('sv-container').value = '';
+    document.getElementById('sv-pg-host').value = '';
+    document.getElementById('sv-pg-port').value = '5432';
     document.getElementById('sv-pg-user').value = 'postgres';
     document.getElementById('sv-pg-password').value = '';
     onRemoteToggle();
@@ -624,23 +686,34 @@ function openServerModal(serverId = null) {
 function onRemoteToggle() {
   const on = document.getElementById('sv-remote-toggle').checked;
   document.getElementById('sv-ssh-fields').style.display = on ? '' : 'none';
+  updatePgHostVisibility();
   updateServerTypeLabel();
 }
 
 function onDockerToggle() {
   const on = document.getElementById('sv-docker-toggle').checked;
   document.getElementById('sv-docker-fields').classList.toggle('d-none', !on);
+  updatePgHostVisibility();
   updateServerTypeLabel();
+}
+
+function updatePgHostVisibility() {
+  // IP/hostname ile doğrudan (TCP) bağlantı yalnızca SSH ve Docker kullanılmadığında geçerlidir
+  const isRemote = document.getElementById('sv-remote-toggle').checked;
+  const isDocker = document.getElementById('sv-docker-toggle').checked;
+  document.getElementById('sv-pghost-fields').classList.toggle('d-none', isRemote || isDocker);
 }
 
 function updateServerTypeLabel() {
   const isRemote = document.getElementById('sv-remote-toggle').checked;
   const isDocker = document.getElementById('sv-docker-toggle').checked;
+  const pgHost = document.getElementById('sv-pg-host').value.trim();
   let label;
-  if (isRemote && isDocker)  label = 'SSH + Docker PostgreSQL';
-  else if (isRemote)         label = 'SSH + Yerel PostgreSQL (uzak sunucuda)';
-  else if (isDocker)         label = 'Yerel Docker PostgreSQL';
-  else                       label = 'Yerel PostgreSQL';
+  if (isRemote && isDocker)       label = 'SSH + Docker PostgreSQL';
+  else if (isRemote)              label = 'SSH + Yerel PostgreSQL (uzak sunucuda)';
+  else if (isDocker)              label = 'Yerel Docker PostgreSQL';
+  else if (pgHost)                label = `IP/Hostname ile Doğrudan Bağlantı (${pgHost})`;
+  else                            label = 'Yerel PostgreSQL';
   document.getElementById('sv-type-label').textContent = label;
 }
 
@@ -655,6 +728,8 @@ async function saveServer() {
     ssh_user: isRemote ? document.getElementById('sv-ssh-user').value.trim() : '',
     ssh_key:  isRemote ? document.getElementById('sv-ssh-key').value.trim()  : '',
     docker_container: isDocker ? document.getElementById('sv-container').value.trim() : '',
+    pg_host: (!isRemote && !isDocker) ? document.getElementById('sv-pg-host').value.trim() : '',
+    pg_port: (!isRemote && !isDocker) ? (document.getElementById('sv-pg-port').value.trim() || '5432') : '5432',
     pg_user: document.getElementById('sv-pg-user').value.trim() || 'postgres',
   };
   const sshPwd = document.getElementById('sv-ssh-password').value;
@@ -695,6 +770,40 @@ async function saveConfig() {
   const d = await r.json();
   if (d.status === 'ok') toast('Ayarlar kaydedildi.');
   else toast('Hata: ' + JSON.stringify(d), 'error');
+}
+
+// ── MinIO ─────────────────────────────────────────────────────────────────────
+
+async function loadMinioConfig() {
+  const r = await fetch('/api/minio/config');
+  const d = await r.json();
+  document.getElementById('minio_enabled').checked = d.minio_enabled === '1';
+  document.getElementById('minio_endpoint').value  = d.minio_endpoint  || '';
+  document.getElementById('minio_access_key').value = d.minio_access_key || '';
+  document.getElementById('minio_bucket').value    = d.minio_bucket    || '';
+  document.getElementById('minio_secret_key').value = '';
+}
+
+async function saveMinioConfig() {
+  const payload = {
+    minio_enabled:    document.getElementById('minio_enabled').checked,
+    minio_endpoint:   document.getElementById('minio_endpoint').value.trim(),
+    minio_access_key: document.getElementById('minio_access_key').value.trim(),
+    minio_secret_key: document.getElementById('minio_secret_key').value,
+    minio_bucket:     document.getElementById('minio_bucket').value.trim(),
+  };
+  const r = await fetch('/api/minio/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (d.status === 'ok') toast('MinIO ayarları kaydedildi.');
+  else toast('Hata: ' + JSON.stringify(d), 'error');
+}
+
+async function testMinio() {
+  const r = await fetch('/api/minio/test', { method: 'POST' });
+  const d = await r.json();
+  toast(d.message, d.status === 'ok' ? 'success' : 'error');
 }
 
 // ── Databases ─────────────────────────────────────────────────────────────────
@@ -968,6 +1077,7 @@ document.getElementById('tab-backups-link').addEventListener('shown.bs.tab', loa
 
 loadServers();
 loadConfig();
+loadMinioConfig();
 </script>
 </body>
 </html>

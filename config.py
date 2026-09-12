@@ -46,6 +46,8 @@ def init_db():
             ssh_key          TEXT DEFAULT '',
             ssh_password     TEXT DEFAULT '',
             docker_container TEXT DEFAULT '',
+            pg_host          TEXT DEFAULT '',
+            pg_port          TEXT DEFAULT '5432',
             pg_user          TEXT DEFAULT 'postgres',
             pg_password      TEXT DEFAULT ''
         )
@@ -61,6 +63,17 @@ def init_db():
     # Migrate servers table: add ssh_password if missing
     try:
         c.execute("ALTER TABLE servers ADD COLUMN ssh_password TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # Migrate servers table: add pg_host / pg_port if missing (direct TCP connection
+    # to a PostgreSQL server by IP/hostname, without SSH or Docker)
+    try:
+        c.execute("ALTER TABLE servers ADD COLUMN pg_host TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        c.execute("ALTER TABLE servers ADD COLUMN pg_port TEXT DEFAULT '5432'")
     except Exception:
         pass
 
@@ -109,8 +122,11 @@ def init_db():
 
 
 # ---------------------------------------------------------------------------
-# Global config (keep_backups only)
+# Global config
 # ---------------------------------------------------------------------------
+
+_MINIO_KEYS = ('minio_enabled', 'minio_endpoint', 'minio_access_key', 'minio_secret_key', 'minio_bucket')
+
 
 def get_config() -> dict:
     conn = sqlite3.connect(DB_PATH)
@@ -130,6 +146,16 @@ def save_config(data: dict):
     conn.close()
 
 
+def get_minio_config() -> dict:
+    cfg = get_config()
+    return {k: cfg.get(k, '') for k in _MINIO_KEYS}
+
+
+def save_minio_config(data: dict):
+    allowed = {k: data[k] for k in _MINIO_KEYS if k in data}
+    save_config(allowed)
+
+
 # ---------------------------------------------------------------------------
 # Servers CRUD
 # ---------------------------------------------------------------------------
@@ -137,7 +163,8 @@ def save_config(data: dict):
 def get_servers() -> list:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT id, name, ssh_host, ssh_user, ssh_key, docker_container, pg_user FROM servers ORDER BY name')
+    c.execute('SELECT id, name, ssh_host, ssh_user, ssh_key, docker_container, pg_host, pg_port, pg_user '
+              'FROM servers ORDER BY name')
     rows = c.fetchall()
     cols = [d[0] for d in c.description]
     conn.close()
@@ -162,9 +189,9 @@ def add_server(data: dict) -> int:
     c = conn.cursor()
     c.execute(
         '''INSERT INTO servers (name, ssh_host, ssh_user, ssh_key, ssh_password,
-                                docker_container, pg_user, pg_password)
+                                docker_container, pg_host, pg_port, pg_user, pg_password)
            VALUES (:name, :ssh_host, :ssh_user, :ssh_key, :ssh_password,
-                   :docker_container, :pg_user, :pg_password)''',
+                   :docker_container, :pg_host, :pg_port, :pg_user, :pg_password)''',
         {
             'name': data['name'],
             'ssh_host': data.get('ssh_host', ''),
@@ -172,6 +199,8 @@ def add_server(data: dict) -> int:
             'ssh_key': data.get('ssh_key', ''),
             'ssh_password': data.get('ssh_password', ''),
             'docker_container': data.get('docker_container', ''),
+            'pg_host': data.get('pg_host', ''),
+            'pg_port': data.get('pg_port', '') or '5432',
             'pg_user': data.get('pg_user', 'postgres'),
             'pg_password': data.get('pg_password', ''),
         }
@@ -185,7 +214,7 @@ def add_server(data: dict) -> int:
 def update_server(server_id: int, data: dict):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    updatable = ['name', 'ssh_host', 'ssh_user', 'ssh_key', 'docker_container', 'pg_user']
+    updatable = ['name', 'ssh_host', 'ssh_user', 'ssh_key', 'docker_container', 'pg_host', 'pg_port', 'pg_user']
     sets, params = [], []
     for f in updatable:
         if f in data:
@@ -216,7 +245,7 @@ def delete_server(server_id: int):
 # ---------------------------------------------------------------------------
 
 def log_backup(server_id, server_name, database, started_at, finished_at,
-               status, message, file_path=None, file_size=None):
+               status, message, file_path=None, file_size=None) -> int:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -224,6 +253,16 @@ def log_backup(server_id, server_name, database, started_at, finished_at,
             (server_id, server_name, database, started_at, finished_at, status, message, file_path, file_size)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (server_id, server_name, database, started_at, finished_at, status, message, file_path, file_size))
+    log_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return log_id
+
+
+def update_backup_log_message(log_id: int, message: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE backup_logs SET message=? WHERE id=?', (message, log_id))
     conn.commit()
     conn.close()
 

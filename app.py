@@ -143,6 +143,41 @@ def api_save_config():
 
 
 # ---------------------------------------------------------------------------
+# MinIO config
+# ---------------------------------------------------------------------------
+
+@app.get('/api/minio/config')
+@login_required
+def api_get_minio_config():
+    cfg = cfg_module.get_minio_config()
+    cfg.pop('minio_secret_key', None)
+    return jsonify(cfg)
+
+
+@app.post('/api/minio/config')
+@login_required
+def api_save_minio_config():
+    data = request.json or {}
+    payload = {
+        'minio_enabled':    '1' if data.get('minio_enabled') else '0',
+        'minio_endpoint':   data.get('minio_endpoint', '').strip(),
+        'minio_access_key': data.get('minio_access_key', '').strip(),
+        'minio_bucket':     data.get('minio_bucket', '').strip(),
+    }
+    if data.get('minio_secret_key', '').strip():
+        payload['minio_secret_key'] = data['minio_secret_key'].strip()
+    cfg_module.save_minio_config(payload)
+    return jsonify({'status': 'ok'})
+
+
+@app.post('/api/minio/test')
+@login_required
+def api_test_minio():
+    cfg = cfg_module.get_minio_config()
+    return jsonify(backup.test_minio_connection(cfg))
+
+
+# ---------------------------------------------------------------------------
 # On-demand backup
 # ---------------------------------------------------------------------------
 

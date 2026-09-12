@@ -35,6 +35,8 @@ A `server` dict drives all backup/restore logic. Four connection combinations ar
 
 Helpers in `backup.py`: `_is_remote(server)`, `_is_docker(server)`, `_ssh_prefix(server)` (returns `(cmd_list, env_dict_or_None)` — env carries `SSHPASS` when ssh_password is set).
 
+**Direct TCP connection by IP/hostname**: when `ssh_host` and `docker_container` are both empty, an optional `pg_host` (+ `pg_port`, default `5432`) lets the "local" psql/pg_dump commands connect to any reachable PostgreSQL server over the network via `-h`/`-p`, instead of only the local socket. Helper: `_pg_conn_args(server)` returns `['-h', host, '-p', port]` or `[]`; it's appended to the local (non-SSH, non-docker) `psql`/`pg_dump` argv in every function that builds one. Frontend only shows/sends these fields when both the SSH and Docker toggles are off (`sv-pghost-fields` / `updatePgHostVisibility()` in `index.html`).
+
 ## Key conventions
 
 **`_ssh_prefix` return value must always be unpacked and env threaded through subprocess calls:**
