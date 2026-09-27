@@ -1,19 +1,51 @@
+import ipaddress
 import os
 import threading
+import time
+from datetime import timedelta
 from functools import wraps
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, abort
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash
 
 import config as cfg_module
 import backup
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-production')
+
+_secret_key = os.environ.get('SECRET_KEY', '')
+if len(_secret_key) < 32:
+    raise SystemExit('SECRET_KEY ortam değişkeni ayarlanmalı (en az 32 karakter).')
+app.secret_key = _secret_key
+
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    # Uygulama HTTPS terminate eden bir proxy arkasındaysa SESSION_COOKIE_SECURE=1 verin.
+    SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0') == '1',
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+
+# Reverse proxy arkasında gerçek istemci IP'sini X-Forwarded-For'dan almak için
+# önündeki proxy sayısını verin. Uygulamaya proxy'yi atlayarak doğrudan
+# erişilebiliyorsa 0 bırakın, aksi halde X-Forwarded-For sahtelenebilir.
+_trusted_proxies = int(os.environ.get('TRUSTED_PROXIES', '0'))
+if _trusted_proxies > 0:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_trusted_proxies, x_proto=_trusted_proxies,
+                            x_host=_trusted_proxies)
+
+# Virgülle ayrılmış IP/CIDR listesi (ör. "100.64.0.0/10,192.168.1.0/24").
+# Boşsa kısıtlama yapılmaz.
+_allowed_networks = [
+    ipaddress.ip_network(n.strip(), strict=False)
+    for n in os.environ.get('ALLOWED_IPS', '').split(',') if n.strip()
+]
+
 cfg_module.init_db()
 
 jobstores = {'default': SQLAlchemyJobStore(url='sqlite:///data/scheduler.db')}
@@ -24,6 +56,42 @@ scheduler.start()
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+
+@app.before_request
+def enforce_ip_allowlist():
+    if not _allowed_networks:
+        return
+    try:
+        addr = ipaddress.ip_address(request.remote_addr or '')
+    except ValueError:
+        abort(403)
+    if not any(addr in net for net in _allowed_networks):
+        abort(403)
+
+
+@app.after_request
+def set_security_headers(resp):
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    return resp
+
+
+# Başarısız giriş denemelerini IP başına sınırla (bellek içi, tek süreç).
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_WINDOW_SECONDS = 15 * 60
+_login_failures: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _recent_failures(ip: str, now: float) -> list[float]:
+    attempts = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW_SECONDS]
+    if attempts:
+        _login_failures[ip] = attempts
+    else:
+        _login_failures.pop(ip, None)
+    return attempts
+
 
 def login_required(f):
     @wraps(f)
@@ -45,13 +113,29 @@ def login_page():
 
 @app.post('/login')
 def do_login():
+    ip = request.remote_addr or 'unknown'
+    now = time.time()
+    with _login_lock:
+        if len(_recent_failures(ip, now)) >= _LOGIN_MAX_FAILURES:
+            return render_template(
+                'login.html', error='Çok fazla başarısız deneme. Lütfen daha sonra tekrar deneyin.'
+            ), 429
+
     data = request.form
     username = data.get('username', '').strip()
     password = data.get('password', '')
     if username == cfg_module.APP_USERNAME and check_password_hash(cfg_module.APP_PASSWORD_HASH, password):
+        with _login_lock:
+            _login_failures.pop(ip, None)
+        session.clear()
+        session.permanent = True
         session['logged_in'] = True
         return redirect(url_for('index'))
-    return render_template('login.html', error='Kullanıcı adı veya şifre hatalı.')
+
+    with _login_lock:
+        _login_failures.setdefault(ip, []).append(now)
+    app.logger.warning('Başarısız giriş denemesi: ip=%s kullanıcı=%r', ip, username)
+    return render_template('login.html', error='Kullanıcı adı veya şifre hatalı.'), 401
 
 
 @app.post('/logout')
@@ -322,4 +406,14 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    from waitress import serve
+
+    # Varsayılan olarak yalnızca localhost'u dinle. Docker'daki bir reverse
+    # proxy'nin erişmesi gerekiyorsa BIND_HOST=172.17.0.1 (docker0 köprüsü) verin;
+    # 0.0.0.0 portu doğrudan internete açabilir.
+    serve(
+        app,
+        host=os.environ.get('BIND_HOST', '127.0.0.1'),
+        port=int(os.environ.get('PORT', '5000')),
+        threads=8,
+    )

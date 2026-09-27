@@ -1,8 +1,9 @@
 Running the app
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-python app.py          # http://localhost:5000
-Default credentials: admin / changeme123 (override with APP_USERNAME / APP_PASSWORD env vars).
+export APP_PASSWORD='<en az 12 karakter>' SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')"
+python app.py          # http://127.0.0.1:5000 (waitress)
+APP_PASSWORD ve SECRET_KEY zorunludur; verilmezse uygulama başlamaz. Ağ ayarları: BIND_HOST, PORT, TRUSTED_PROXIES, SESSION_COOKIE_SECURE, ALLOWED_IPS (bkz. setup.sh).
 
 Production deploy: bash setup.sh — installs deps, creates systemd service, generates random password.
 

@@ -12,6 +12,15 @@ APP_USERNAME="${APP_USERNAME:-admin}"
 APP_PASSWORD="${APP_PASSWORD:-}"   # boşsa aşağıda rastgele üretilir
 SECRET_KEY="${SECRET_KEY:-}"       # boşsa aşağıda rastgele üretilir
 
+# ── Ağ / proxy ayarları
+# BIND_HOST: 127.0.0.1 (yalnızca yerel). Docker'daki bir reverse proxy erişecekse 172.17.0.1.
+#            0.0.0.0 kullanmayın — port doğrudan internete açılır.
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
+PORT="${PORT:-5000}"
+TRUSTED_PROXIES="${TRUSTED_PROXIES:-0}"              # önündeki reverse proxy sayısı (genelde 1)
+SESSION_COOKIE_SECURE="${SESSION_COOKIE_SECURE:-0}"  # HTTPS arkasındaysa 1
+ALLOWED_IPS="${ALLOWED_IPS:-}"                       # ör. 100.64.0.0/10 (Tailscale); boşsa kısıtlama yok
+
 echo "==> PostgreSQL Yedekleme Uygulaması Kurulumu"
 echo "    Dizin    : $APP_DIR"
 echo "    Kullanıcı: $SERVICE_USER"
@@ -69,7 +78,8 @@ echo "==> systemd servisi oluşturuluyor..."
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=PostgreSQL Yedekleme Web Uygulaması
-After=network.target
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -82,6 +92,11 @@ Environment=PYTHONUNBUFFERED=1
 Environment=APP_USERNAME=${APP_USERNAME}
 Environment=APP_PASSWORD=${APP_PASSWORD}
 Environment=SECRET_KEY=${SECRET_KEY}
+Environment=BIND_HOST=${BIND_HOST}
+Environment=PORT=${PORT}
+Environment=TRUSTED_PROXIES=${TRUSTED_PROXIES}
+Environment=SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE}
+Environment="ALLOWED_IPS=${ALLOWED_IPS}"
 
 [Install]
 WantedBy=multi-user.target
@@ -96,7 +111,7 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "  Kurulum tamamlandı!"
 echo ""
-echo "  Web arayüzü : http://$(hostname -I | awk '{print $1}'):5000"
+echo "  Dinlenen adres : ${BIND_HOST}:${PORT}"
 echo ""
 echo "  Giriş bilgileri:"
 echo "    Kullanıcı adı : ${APP_USERNAME}"

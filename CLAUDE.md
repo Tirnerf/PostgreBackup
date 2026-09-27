@@ -7,10 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-python app.py          # http://localhost:5000
+export APP_PASSWORD='<at least 12 chars>' SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')"
+python app.py          # waitress on http://127.0.0.1:5000
 ```
 
-Default credentials: `admin` / `changeme123` (override with `APP_USERNAME` / `APP_PASSWORD` env vars).
+`APP_PASSWORD` (min 12 chars, no `changeme123`) and `SECRET_KEY` (min 32 chars) are **required** — the app refuses to start without them. `APP_USERNAME` defaults to `admin`.
+
+Other env vars: `BIND_HOST` (default `127.0.0.1`; use `172.17.0.1` when a Dockerised reverse proxy must reach it — never `0.0.0.0`), `PORT`, `TRUSTED_PROXIES` (number of proxies in front, enables `ProxyFix`; keep `0` if the port is directly reachable), `SESSION_COOKIE_SECURE=1` behind HTTPS, `ALLOWED_IPS` (comma-separated IP/CIDR allowlist, 403 otherwise). Failed logins are rate-limited per IP (5 per 15 min, in-memory).
 
 Production deploy: `bash setup.sh` — installs deps, creates systemd service, generates random password.
 

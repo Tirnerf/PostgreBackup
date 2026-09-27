@@ -5,8 +5,16 @@ from werkzeug.security import generate_password_hash
 DB_PATH = os.environ.get('BACKUP_DB_PATH', 'data/backup.db')
 BACKUP_DIR = os.environ.get('BACKUP_DIR', 'backups')
 
+_WEAK_PASSWORDS = {'changeme123', 'admin', 'password', '123456'}
+
 APP_USERNAME = os.environ.get('APP_USERNAME', 'admin')
-APP_PASSWORD_HASH = generate_password_hash(os.environ.get('APP_PASSWORD', 'changeme123'))
+_app_password = os.environ.get('APP_PASSWORD', '')
+if len(_app_password) < 12 or _app_password in _WEAK_PASSWORDS:
+    raise SystemExit(
+        'APP_PASSWORD ortam değişkeni ayarlanmalı (en az 12 karakter, varsayılan şifre kabul edilmez).'
+    )
+APP_PASSWORD_HASH = generate_password_hash(_app_password)
+del _app_password
 
 
 def init_db():

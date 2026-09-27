@@ -375,7 +375,7 @@ def restore_backup(filename: str, target_server: dict, database: str) -> dict:
     pg_password = target_server.get('pg_password', '')
 
     try:
-        _create_db(target_server, database)
+        _recreate_db(target_server, database)
 
         if _is_remote(target_server):
             ssh, ssh_env = _ssh_prefix(target_server)
@@ -421,9 +421,20 @@ def restore_backup(filename: str, target_server: dict, database: str) -> dict:
         return {'status': 'error', 'message': str(e)}
 
 
-def _create_db(server: dict, database: str):
+def _recreate_db(server: dict, database: str):
+    """Drop and recreate the target database so a restore always starts from
+    a clean slate. Without this, restoring the same backup (or any dump)
+    into a database that already exists just re-runs CREATE TABLE/COPY
+    against existing objects, which psql reports errors for but does not
+    abort on -- so the restore "succeeds" while silently leaving the old
+    data in place."""
     pg_user = server.get('pg_user', 'postgres')
     pg_password = server.get('pg_password', '')
+    terminate_sql = (
+        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        f"WHERE datname='{database}' AND pid <> pg_backend_pid()"
+    )
+    drop_sql = f'DROP DATABASE IF EXISTS "{database}"'
     create_sql = f'CREATE DATABASE "{database}"'
 
     try:
@@ -433,10 +444,16 @@ def _create_db(server: dict, database: str):
             if _is_docker(server):
                 container = server['docker_container']
                 pw_env = f"-e PGPASSWORD='{pg_password}'" if pg_password else ''
-                cmd = f'docker exec {pw_env} {container} psql -U {pg_user} -d postgres -c "{create_sql}" 2>/dev/null || true'
+                cmd = (
+                    f'docker exec {pw_env} {container} psql -U {pg_user} -d postgres '
+                    f'-c "{terminate_sql}" -c "{drop_sql}" -c "{create_sql}" 2>/dev/null || true'
+                )
             else:
                 pw = f"PGPASSWORD='{pg_password}' " if pg_password else ''
-                cmd = f'{pw}psql -U {pg_user} -d postgres -c "{create_sql}" 2>/dev/null || true'
+                cmd = (
+                    f'{pw}psql -U {pg_user} -d postgres '
+                    f'-c "{terminate_sql}" -c "{drop_sql}" -c "{create_sql}" 2>/dev/null || true'
+                )
             subprocess.run(ssh + [cmd], capture_output=True, timeout=30, env=s_env)
         else:
             env = os.environ.copy()
@@ -445,12 +462,14 @@ def _create_db(server: dict, database: str):
             if _is_docker(server):
                 container = server['docker_container']
                 subprocess.run(
-                    ['docker', 'exec', container, 'psql', '-U', pg_user, '-d', 'postgres', '-c', create_sql],
+                    ['docker', 'exec', container, 'psql', '-U', pg_user, '-d', 'postgres',
+                     '-c', terminate_sql, '-c', drop_sql, '-c', create_sql],
                     capture_output=True, timeout=30
                 )
             else:
                 subprocess.run(
-                    ['psql', '-U', pg_user] + _pg_conn_args(server) + ['-d', 'postgres', '-c', create_sql],
+                    ['psql', '-U', pg_user] + _pg_conn_args(server) + ['-d', 'postgres',
+                     '-c', terminate_sql, '-c', drop_sql, '-c', create_sql],
                     capture_output=True, timeout=30, env=env
                 )
     except Exception:
