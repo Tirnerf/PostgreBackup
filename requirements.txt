@@ -3,4 +3,3 @@ apscheduler>=3.10.0
 SQLAlchemy>=2.0.0
 werkzeug>=3.0.0
 minio>=7.0.0
-waitress>=3.0.0
